@@ -7,9 +7,9 @@ import os
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="Weekly ATM Transaction Monitoring Report",
+    page_title="ATM Transaction Monitoring Dashboard",
     page_icon="💳",
-    layout="centered"
+    layout="wide"  # Changed to wide layout for the dashboard arrangement
 )
 
 # --- Helper Functions ---
@@ -153,6 +153,17 @@ def add_terminal_details_sheet(wb_main, terminal_aggregation):
                 pass
         ws_terminal.column_dimensions[column_letter].width = (max_length + 2)
 
+    # Return summary calculations dictionary to dynamically feed the UI Dashboard engine
+    return {
+        'grand_totals': grand_totals,
+        'groups': {
+            'YGN Public': ygn_public_sum,
+            'YGN Branch': ygn_branch_sum,
+            'Other Public': other_public_sum,
+            'Other Branch': other_branch_sum
+        }
+    }
+
 def add_terminal_transaction_sheets(wb_main, terminal_transactions, header):
     for terminal_id, transactions in terminal_transactions.items():
         if not transactions:  
@@ -176,11 +187,9 @@ def add_terminal_transaction_sheets(wb_main, terminal_transactions, header):
             ws.column_dimensions[column_letter].width = min((max_length + 2), 30)
 
 def process_transaction_bytes(file_bytes, file_name):
-    # Streamlit file upload gives bytes. Read into openpyxl using BytesIO
     ext = os.path.splitext(file_name)[1].lower()
     
     if ext == ".xls":
-        # Convert legacy xls to dataframe via xlrd, then create an openpyxl memory stream
         xls_df = pd.read_excel(io.BytesIO(file_bytes), engine='xlrd')
         wb_data = Workbook()
         ws_data = wb_data.active
@@ -234,7 +243,7 @@ def process_transaction_bytes(file_bytes, file_name):
     
     if amount_idx == -1 or fee_idx == -1 or refno_idx == -1 or terminal_id_idx == -1:
         st.error("❌ Required columns missing in Excel mapping hierarchy.")
-        return None
+        return None, None
 
     terminal_ids = [
         "09950001", "09950002", "09950003", "09950004", "09950005", "09950006", "09950007", "09950008", "09950009", "09950010",
@@ -302,33 +311,88 @@ def process_transaction_bytes(file_bytes, file_name):
             row[tranx_amount_idx].value = str(row[tranx_amount_idx].value).replace('MMK', '')
 
     add_terminal_transaction_sheets(wb_main, terminal_transactions, header)
-    add_terminal_details_sheet(wb_main, terminal_aggregation)
+    summary_data = add_terminal_details_sheet(wb_main, terminal_aggregation)
     
-    # Save output to buffer memory for down-stream web downloads
     out_buffer = io.BytesIO()
     wb_main.save(out_buffer)
     out_buffer.seek(0)
-    return out_buffer
+    return out_buffer, summary_data
 
 # --- Web UI Structure ---
-st.title("💳 ATM Transaction Processor")
-st.subheader("Weekly & Monthly ATM Transaction Monitoring Report")
-st.write("Upload your Excel spreadsheet (`.xls`, `.xlsx`, `.xlsm`) generated from FeelSwitch below:")
+st.title("💳 ATM Transaction Dashboard & Processor")
+st.write("Upload your weekly or monthly FeelSwitch report to generate summaries and download the fully formatted tracker.")
 
-uploaded_file = st.file_uploader("Choose an Excel file", type=["xls", "xlsx", "xlsm"])
+uploaded_file = st.file_uploader("Choose a FeelSwitch Log File (.xls, .xlsx, .xlsm)", type=["xls", "xlsx", "xlsm"])
 
 if uploaded_file is not None:
-    st.info("🔄 Processing transaction dataset pipeline...")
+    # Run parsing pipeline
+    processed_file, summary_data = process_transaction_bytes(uploaded_file.getvalue(), uploaded_file.name)
     
-    # Run the transaction processing pipeline
-    processed_file = process_transaction_bytes(uploaded_file.getvalue(), uploaded_file.name)
-    
-    if processed_file:
-        st.success("✅ Log tracking successfully summarized and built!")
+    if processed_file and summary_data:
+        st.success("📊 Report Processed Successfully!")
         
-        # UI Web File downloader button triggering native browser action
+        # ------------------ DASHBOARD METRIC CARDS LAYER ------------------
+        st.markdown("### 📈 Key Performance Indicators (Grand Totals)")
+        
+        # Create columns for metric boxes
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        
+        with m_col1:
+            st.metric(
+                label="Total Use Card (Col E Sum)", 
+                value=f"{summary_data['grand_totals']['use_card']:,}"
+            )
+        with m_col2:
+            st.metric(
+                label="Total Transactions", 
+                value=f"{summary_data['grand_totals']['count']:,}"
+            )
+        with m_col3:
+            st.metric(
+                label="Total Volume Amount", 
+                value=f"{summary_data['grand_totals']['amount']:,.2f} MMK"
+            )
+        with m_col4:
+            st.metric(
+                label="Net Terminal SUM", 
+                value=f"{summary_data['grand_totals']['sum']:,.2f} MMK"
+            )
+            
+        st.markdown("---")
+        
+        # ------------------ VISUAL CHARTS LAYER ------------------
+        st.markdown("### 🏛️ Regional Location Group Metrics")
+        
+        # Restructure group dictionary for pandas dataframe mapping
+        chart_df = pd.DataFrame({
+            'Location Group': list(summary_data['groups'].keys()),
+            'Total SUM (MMK)': list(summary_data['groups'].values())
+        })
+        
+        # Build layout columns splitting data table vs dynamic bar chart
+        d_col1, d_col2 = st.columns([2, 3])
+        
+        with d_col1:
+            st.write("**Summary Table**")
+            # Render clean web display dataframe formatted properly
+            st.dataframe(
+                chart_df.style.format({'Total SUM (MMK)': '{:,.2f}'}),
+                hide_index=True,
+                use_container_width=True
+            )
+        with d_col2:
+            st.write("**Visual Performance Distribution**")
+            # Native interactive bar chart inside Streamlit UI
+            st.bar_chart(data=chart_df, x='Location Group', y='Total SUM (MMK)', use_container_width=True)
+
+        st.markdown("---")
+        
+        # ------------------ DOWNLOAD LAYER ------------------
+        st.markdown("### 📥 Document Generation")
+        st.write("Click the button below to download the fully formatted report tracking book containing the newly structured master files alongside individual terminal broken down tabs.")
+        
         st.download_button(
-            label="📥 Download Processed Report",
+            label="💾 Download Processed Report (Excel Workbook)",
             data=processed_file,
             file_name="Processed_ATM_Monitoring_Report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -336,4 +400,4 @@ if uploaded_file is not None:
 
 # --- Web Footer ---
 st.markdown("---")
-st.caption("© Version 2 (Web Variant) | Developed by Bo Bo Tun")
+st.caption("© Version 3 (Dashboard Variant) | Developed by Bo Bo Tun")
